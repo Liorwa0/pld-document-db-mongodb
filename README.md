@@ -1,138 +1,62 @@
 # PLD: Document Database with MongoDB
 
-Proof of concept for the Peer Learning Day on non-relational databases.
-The team explored the **document model** using **MongoDB** and a Spotify tracks dataset from Kaggle.
+Proof of concept for a Peer Learning Day on document databases using MongoDB and a Spotify tracks dataset.
 
-## About the project
+## Data transformation
+The source CSV contains repeated rows for tracks associated with different genres. The preparation step creates one document per track:
+- repeated genre values become a unique `genres` array;
+- artists remain an array;
+- audio measurements are grouped in `audio_features`;
+- the source track identifier becomes MongoDB's `_id`.
 
-The original dataset is a CSV file with about **114,000 rows**. The same track appears
-once for every genre it belongs to, so we reshaped it into JSON documents:
-
-- 114,000 CSV rows become **89,741 unique tracks**.
-- The repeated genre rows are merged into a single `genres` **array**.
-- The audio columns (danceability, energy, tempo, ...) are grouped into a nested
-  `audio_features` object.
-- The Spotify track id becomes the document `_id`.
-
-Each track is then a single self-contained document. Artists, genres and audio features
-live inside the document, so no joins are needed.
+The reported source dataset has approximately 114,000 rows and the original analysis produced 89,741 unique track documents. Re-run the preparation script against the provided dataset to reproduce the count.
 
 ## Requirements
+- Python 3.10+
+- MongoDB Community Server or Docker
+- Dependencies: `pip install -r requirements.txt`
 
-- Docker
-- Python 3
-- `pymongo`
-
-## How to run
-
-Run the steps in this order, from the project folder.
-
-1. Start MongoDB (if the container already exists, use `docker start mongo`):
-
-   ```bash
-   docker run --name mongo -p 27017:27017 -d mongo:latest
-   ```
-
-2. Install the driver. On recent Ubuntu-based systems pip may refuse to install
-   system-wide, so use a virtual environment:
-
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   pip install pymongo
-   ```
-
-3. Build `tracks.json` from `dataset.csv`:
-
-   ```bash
-   python3 prepare_data.py
-   ```
-
-4. Load the data into the `pld_db.tracks` collection (safe to re-run, it recreates the collection):
-
-   ```bash
-   python3 import_data.py
-   ```
-
-5. Run the CRUD operations in order:
-
-   ```bash
-   python3 create.py
-   python3 read.py
-   python3 update.py
-   python3 delete.py
-   ```
-
-   `create.py` inserts a fixed `_id`, so running it twice without `delete.py` in between
-   reports that the document already exists. That is expected.
-
-6. Compare a query before and after adding an index:
-
-   ```bash
-   python3 index_demo.py
-   ```
-
-## Files
-
-| File | What it does |
-|---|---|
-| `config.py` | Shared connection settings (URI, database, collection, data file). Can be overridden with environment variables. |
-| `prepare_data.py` | Converts `dataset.csv` into `tracks.json`: merges duplicate rows, builds the `genres` array and the nested `audio_features`. |
-| `import_data.py` | Loads `tracks.json` into MongoDB in batches of 5000 documents. |
-| `create.py` | **Create**: inserts one document with `insert_one`. Its shape differs from the other tracks (no `genres`, extra `label` field), which shows the flexible schema. |
-| `read.py` | **Read**: queries by `_id`, by an array element (`artists`) and by a nested field (`audio_features.danceability`). |
-| `update.py` | **Update**: changes a field and a nested field with `$set`, and appends to an array with `$push`. |
-| `delete.py` | **Delete**: removes one document with `delete_one` and checks the rest are untouched. |
-| `index_demo.py` | **Index**: runs the same query with `explain()` before and after creating an index on `genres`. |
-
-Every script also contains the equivalent mongosh command and SQL statement as comments.
-
-## Document structure
-
-```json
-{
-  "_id": "5SuOikwiRyPMVoIQDJUgSV",
-  "name": "Comedy",
-  "album": "Comedy",
-  "artists": ["Gen Hoshino"],
-  "genres": ["acoustic", "j-pop", "singer-songwriter", "songwriter"],
-  "popularity": 73,
-  "duration_ms": 230666,
-  "explicit": false,
-  "audio_features": {
-    "danceability": 0.676,
-    "energy": 0.461,
-    "key": 1.0,
-    "loudness": -6.746,
-    "mode": 0.0,
-    "speechiness": 0.143,
-    "acousticness": 0.0322,
-    "instrumentalness": 1.01e-06,
-    "liveness": 0.358,
-    "valence": 0.715,
-    "tempo": 87.917,
-    "time_signature": 4.0
-  }
-}
+## Setup
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+docker run --name mongo -p 27017:27017 -d mongo:7
+python prepare_data.py
+python -m unittest discover -s tests -v
+python import_data.py
 ```
 
-- `artists` and `genres` are **arrays**: one track can have several of each.
-- `audio_features` is a **nested document**, queried with dot notation (`audio_features.danceability`).
+The importer refuses to erase a non-empty collection by default. To intentionally replace its contents, run `python import_data.py --replace`. This operation is destructive; back up data first.
 
-## Index demo
+## CRUD exercises
+```bash
+python create.py
+python read.py
+python update.py
+python delete.py
+``
 
-`index_demo.py` runs `find({"genres": "jazz"})` twice and prints how many documents
-MongoDB examined and how long it took:
+The CRUD scripts are educational demonstrations and may mutate the local demo collection.
 
-- **Without an index**, MongoDB scans the whole collection.
-- **With an index** on `genres`, it only looks at the tracks that match.
+## Index experiment
+```bash
+python index_demo.py
+```
+The experiment compares a forced collection scan with a query explicitly hinted to use the `genres_1` index. It no longer drops an existing index before the experiment. Query times vary with hardware, MongoDB version, cache state, and dataset size; no fixed speedup is claimed.
 
-Because `genres` is an array, MongoDB builds a multikey index: every element of the
-array gets its own entry.
+## Key files
+| File | Responsibility |
+|---|---|
+| `config.py` | Environment-overridable connection and path settings |
+| `prepare_data.py` | CSV normalization and deduplication |
+| `import_data.py` | Batched import with explicit destructive opt-in |
+| `create.py`, `read.py`, `update.py`, `delete.py` | CRUD examples |
+| `index_demo.py` | Collection-scan versus indexed query plan |
+| `tests/` | Offline tests for transformation logic |
 
-Indexes are not free: they use extra storage and make every insert, update and delete
-slightly slower, so only fields that are queried often should be indexed.
+## Configuration
+Defaults to `mongodb://localhost:27017/`, database `pld_db`, collection `tracks`. Override with `MONGO_URI`, `MONGO_DB`, `MONGO_COLLECTION`, or `DATA_FILE`.
 
-## Dataset
-
-Spotify tracks dataset from Kaggle.
+## Limitations
+This is a learning exercise, not a production ingestion pipeline. It does not yet provide schema versioning, resumable imports, data-quality reports, or a production-grade migration strategy. Dataset contents and license should be checked against the original Kaggle source before redistribution.
